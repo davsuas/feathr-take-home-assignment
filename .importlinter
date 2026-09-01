@@ -1,0 +1,36 @@
+[importlinter]
+root_packages =
+    eventplatform
+include_external_packages = True
+
+# The claim ARCHITECTURE.md makes about hexagonal boundaries, expressed as a build
+# failure rather than a convention. Both the external drivers AND our own infrastructure
+# package are forbidden: importing our own adapter is the same coupling, just harder to
+# spot in review.
+[importlinter:contract:1]
+name = Domain and application depend on no infrastructure
+type = forbidden
+source_modules =
+    eventplatform.domain
+    eventplatform.application
+forbidden_modules =
+    eventplatform.infrastructure
+    eventplatform.api
+    eventplatform.worker
+    fastapi
+    starlette
+    pymongo
+    motor
+    redis
+    elasticsearch
+    aio_pika
+    boto3
+
+[importlinter:contract:2]
+name = Layered architecture - dependencies point inward
+type = layers
+layers =
+    eventplatform.api | eventplatform.worker
+    eventplatform.application
+    eventplatform.ports
+    eventplatform.domain
