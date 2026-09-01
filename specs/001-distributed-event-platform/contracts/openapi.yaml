@@ -1,0 +1,284 @@
+openapi: 3.1.0
+info:
+  title: Multi-Tenant Event Processing Platform
+  version: 1.0.0
+  description: |
+    Tenant-scoped event ingestion, querying, aggregation, search, and cached live summaries.
+
+    Consistency semantics, stated once and honoured everywhere:
+      - 202 Accepted means the event was validated and queued. It does NOT mean the event is
+        stored, searchable, or reflected in any summary.
+      - An event becomes retrievable via /events before it becomes findable via /events/search.
+      - /events/stats/realtime may be stale by up to the configured freshness window (default 30s).
+servers:
+  - url: http://localhost:8000
+security:
+  - bearerAuth: []
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: Opaque API key. The platform maps it to exactly one tenant. Callers never name
+        their own tenant in a request.
+  parameters:
+    Cursor:
+      name: cursor
+      in: query
+      schema: { type: string }
+      description: Opaque keyset cursor from a previous response. Omit for the first page.
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+  schemas:
+    EventSubmission:
+      type: object
+      required: [event_type, occurred_at]
+      additionalProperties: false
+      properties:
+        event_id:
+          type: string
+          maxLength: 64
+          description: Optional. Supply it to make your own retries idempotent. If omitted the
+            platform generates one, and a retry of this submission becomes a SECOND event.
+        event_type:
+          type: string
+          enum: [pageview, click, form_submit, conversion, email_open, email_click,
+                 ad_impression, ad_click, registration, donation, membership, renewal]
+        occurred_at:
+          type: string
+          format: date-time
+          description: UTC ISO 8601. Must be within -90 days and +5 minutes of server time.
+        anonymous_id: { type: string, maxLength: 128 }
+        contact_id:   { type: string, maxLength: 128 }
+        session_id:   { type: string, maxLength: 128 }
+        campaign_id:  { type: string, maxLength: 128 }
+        channel:      { type: string, enum: [web, email, ad, social, sms, offline] }
+        source_url:   { type: string, maxLength: 2048, format: uri }
+        conversion:
+          type: object
+          additionalProperties: false
+          properties:
+            goal_id:  { type: string, maxLength: 128 }
+            value:    { type: number, minimum: 0 }
+            currency: { type: string, minLength: 3, maxLength: 3 }
+        consent:
+          type: object
+          additionalProperties: false
+          description: Absent is distinct from false. The platform records these and does not act
+            on them.
+          properties:
+            analytics:   { type: boolean }
+            advertising: { type: boolean }
+        metadata:
+          type: object
+          description: Max 16KB serialized, max depth 3, max 50 keys.
+    AcceptanceReceipt:
+      type: object
+      required: [event_id, status, event_id_origin]
+      properties:
+        event_id: { type: string }
+        status:   { type: string, enum: [accepted] }
+        event_id_origin:
+          type: string
+          enum: [sender, platform]
+          description: Tells the sender whether their retry will be deduplicated.
+        received_at: { type: string, format: date-time }
+    Event:
+      allOf:
+        - $ref: '#/components/schemas/EventSubmission'
+        - type: object
+          required: [event_id, tenant_id, received_at, schema_version]
+          properties:
+            tenant_id:      { type: string }
+            received_at:    { type: string, format: date-time }
+            schema_version: { type: integer }
+    Problem:
+      type: object
+      description: RFC 9457 problem details.
+      required: [type, title, status]
+      properties:
+        type:     { type: string }
+        title:    { type: string }
+        status:   { type: integer }
+        detail:   { type: string }
+        field:    { type: string, description: Present on validation failures. }
+        trace_id: { type: string }
+  responses:
+    Unauthorized:
+      description: Missing, unrecognized, or revoked credential. Indistinguishable between cases.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    Invalid:
+      description: Validation failure. The event was not queued.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    Backpressure:
+      description: The queue cannot safely accept work. The event was NOT accepted.
+      headers:
+        Retry-After: { schema: { type: integer }, description: Seconds. }
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+paths:
+  /events:
+    post:
+      summary: Submit an event for asynchronous processing
+      description: Validates, resolves the tenant from the credential, and queues. Returns before
+        storage. See consistency semantics in the API description.
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/EventSubmission' } }
+      responses:
+        '202':
+          description: Accepted for processing — NOT yet stored.
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/AcceptanceReceipt' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '413': { $ref: '#/components/responses/Invalid' }
+        '422': { $ref: '#/components/responses/Invalid' }
+        '429':
+          description: Rate limit exceeded.
+        '503': { $ref: '#/components/responses/Backpressure' }
+    get:
+      summary: List this tenant's events
+      parameters:
+        - { name: event_type, in: query, schema: { type: string } }
+        - { name: from, in: query, required: true, schema: { type: string, format: date-time } }
+        - { name: to, in: query, required: true, schema: { type: string, format: date-time } }
+        - { name: contact_id, in: query, schema: { type: string } }
+        - { name: anonymous_id, in: query, schema: { type: string } }
+        - { name: source_url, in: query, schema: { type: string } }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { $ref: '#/components/parameters/Limit' }
+      responses:
+        '200':
+          description: A page of events, newest first, scoped to the caller's tenant.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/Event' } }
+                  next_cursor: { type: [string, 'null'] }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/Invalid' }
+  /events/stats:
+    get:
+      summary: Counts grouped by event type over a time bucket
+      parameters:
+        - { name: from, in: query, required: true, schema: { type: string, format: date-time } }
+        - { name: to, in: query, required: true, schema: { type: string, format: date-time } }
+        - { name: bucket, in: query, required: true, schema: { type: string, enum: [hour, day, week] } }
+        - { name: event_type, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: Buckets with zero-filled gaps. Range is bounded; see 422.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [buckets, range_applied]
+                properties:
+                  range_applied:
+                    type: object
+                    description: Echoes the range actually used, so a clamped request is visible.
+                    properties:
+                      from: { type: string, format: date-time }
+                      to:   { type: string, format: date-time }
+                      clamped: { type: boolean }
+                  buckets:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        bucket_start: { type: string, format: date-time }
+                        event_type:   { type: string }
+                        count:        { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/Invalid' }
+  /events/search:
+    get:
+      summary: Free-text search across allowlisted event metadata
+      description: Terms are treated literally. Raw query DSL is not accepted and cannot alter
+        query structure or escape the tenant filter.
+      parameters:
+        - { name: q, in: query, required: true, schema: { type: string, minLength: 1, maxLength: 256 } }
+        - { name: event_type, in: query, schema: { type: string } }
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { $ref: '#/components/parameters/Limit' }
+      responses:
+        '200':
+          description: Matches. May omit very recently accepted events — see freshness note.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, total, freshness_note]
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/Event' } }
+                  total: { type: integer }
+                  next_cursor: { type: [string, 'null'] }
+                  freshness_note:
+                    type: string
+                    description: States that recently accepted events may not yet be indexed.
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/Invalid' }
+        '503':
+          description: Search capability unavailable. Stored events are unaffected.
+  /events/stats/realtime:
+    get:
+      summary: Lightweight live summary, served from cache
+      parameters:
+        - { name: window, in: query, schema: { type: string, enum: [5m, 1h, 24h], default: 1h } }
+        - { name: event_type, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: Summary. Always answers — degrades rather than failing when the cache is down.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [counts, cached, age_seconds, degraded]
+                properties:
+                  counts: { type: object, additionalProperties: { type: integer } }
+                  cached:  { type: boolean, description: Served from the retained copy. }
+                  age_seconds: { type: integer, description: Age of the data. 0 when recomputed. }
+                  degraded: { type: boolean, description: True when computed because cache was down. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /dead-letters:
+    get:
+      summary: List this tenant's exhausted events
+      parameters:
+        - { $ref: '#/components/parameters/Cursor' }
+        - { $ref: '#/components/parameters/Limit' }
+      responses:
+        '200': { description: Failed events with failure reason, attempts, and timings. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /dead-letters/{event_id}/replay:
+    post:
+      summary: Re-submit an exhausted event for processing
+      parameters:
+        - { name: event_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '202': { description: Re-queued. Idempotency still applies on reprocessing. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { description: No such dead letter for this tenant. }
+  /healthz:
+    get:
+      security: []
+      summary: Liveness — is the process alive
+      responses: { '200': { description: Alive. } }
+  /readyz:
+    get:
+      security: []
+      summary: Readiness — can the service accept work
+      responses:
+        '200': { description: Ready. Per-dependency status included. }
+        '503': { description: Not ready. Names the failing dependency. }
+  /metrics:
+    get:
+      security: []
+      summary: Operational signals
+      responses: { '200': { description: Prometheus exposition format. } }

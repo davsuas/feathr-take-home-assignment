@@ -1,0 +1,895 @@
+openapi: 3.1.0
+info:
+  title: Multi-Tenant Event Processing Platform
+  description: "\nTenant-scoped event ingestion, querying, aggregation, search, and cached live summaries.\n\
+    \nConsistency semantics, stated once and honoured everywhere:\n\n- `202 Accepted` means validated\
+    \ and queued. It does NOT mean stored, searchable, or\n  reflected in any summary.\n- An event becomes\
+    \ retrievable via `/events` before it becomes findable via `/events/search`.\n- `/events/stats/realtime`\
+    \ may be stale by up to the configured freshness window.\n"
+  version: 1.0.0
+paths:
+  /events:
+    post:
+      tags:
+      - events
+      summary: Submit an event for asynchronous processing
+      description: 202 means validated and queued. It does NOT mean stored, searchable, or reflected in
+        any summary.
+      operationId: submit_event_events_post
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EventSubmission'
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AcceptanceReceiptOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      tags:
+      - events
+      summary: List this tenant's events
+      operationId: list_events_events_get
+      parameters:
+      - name: from
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date-time
+          title: From
+      - name: to
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date-time
+          title: To
+      - name: event_type
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Event Type
+      - name: contact_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Contact Id
+      - name: anonymous_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Anonymous Id
+      - name: source_url
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Url
+      - name: cursor
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Cursor
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 200
+          minimum: 1
+          default: 50
+          title: Limit
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventPageOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /events/stats:
+    get:
+      tags:
+      - stats
+      summary: Counts grouped by type and bucket
+      operationId: event_stats_events_stats_get
+      parameters:
+      - name: from
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date-time
+          title: From
+      - name: to
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date-time
+          title: To
+      - name: bucket
+        in: query
+        required: true
+        schema:
+          enum:
+          - hour
+          - day
+          - week
+          type: string
+          title: Bucket
+      - name: event_type
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Event Type
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatsOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /events/stats/realtime:
+    get:
+      tags:
+      - stats
+      summary: Lightweight live summary served from cache
+      description: Always answers. Degrades to computation rather than failing if the cache is down.
+      operationId: realtime_stats_events_stats_realtime_get
+      parameters:
+      - name: window
+        in: query
+        required: false
+        schema:
+          enum:
+          - 5m
+          - 1h
+          - 24h
+          type: string
+          default: 1h
+          title: Window
+      - name: event_type
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Event Type
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RealtimeOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /events/search:
+    get:
+      tags:
+      - search
+      summary: Free-text search across allowlisted event metadata
+      description: Terms are treated literally. Raw query DSL is not accepted.
+      operationId: search_events_events_search_get
+      parameters:
+      - name: q
+        in: query
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 256
+          title: Q
+      - name: event_type
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Event Type
+      - name: from
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: From
+      - name: to
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: To
+      - name: cursor
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Cursor
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 200
+          minimum: 1
+          default: 50
+          title: Limit
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /dead-letters:
+    get:
+      tags:
+      - dead-letters
+      summary: List Dead Letters
+      operationId: list_dead_letters_dead_letters_get
+      parameters:
+      - name: cursor
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Cursor
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 200
+          minimum: 1
+          default: 50
+          title: Limit
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeadLetterPageOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /dead-letters/{event_id}/replay:
+    post:
+      tags:
+      - dead-letters
+      summary: Replay Dead Letter
+      operationId: replay_dead_letter_dead_letters__event_id__replay_post
+      parameters:
+      - name: event_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Event Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: string
+                title: Response Replay Dead Letter Dead Letters  Event Id  Replay Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /healthz:
+    get:
+      tags:
+      - ops
+      summary: Liveness - is the process alive
+      operationId: healthz_healthz_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties:
+                  type: string
+                type: object
+                title: Response Healthz Healthz Get
+  /readyz:
+    get:
+      tags:
+      - ops
+      summary: Readiness - can the service accept work
+      operationId: readyz_readyz_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Readyz Readyz Get
+  /metrics:
+    get:
+      tags:
+      - ops
+      summary: Operational signals
+      operationId: metrics_metrics_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+components:
+  schemas:
+    AcceptanceReceiptOut:
+      properties:
+        event_id:
+          type: string
+          title: Event Id
+        status:
+          type: string
+          const: accepted
+          title: Status
+        event_id_origin:
+          type: string
+          enum:
+          - sender
+          - platform
+          title: Event Id Origin
+        received_at:
+          type: string
+          title: Received At
+      type: object
+      required:
+      - event_id
+      - status
+      - event_id_origin
+      - received_at
+      title: AcceptanceReceiptOut
+    Channel:
+      type: string
+      enum:
+      - web
+      - email
+      - ad
+      - social
+      - sms
+      - offline
+      title: Channel
+    ConsentIn:
+      properties:
+        analytics:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Analytics
+        advertising:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Advertising
+      additionalProperties: false
+      type: object
+      title: ConsentIn
+    ConversionIn:
+      properties:
+        goal_id:
+          anyOf:
+          - type: string
+            maxLength: 128
+          - type: 'null'
+          title: Goal Id
+        value:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: 'null'
+          title: Value
+        currency:
+          anyOf:
+          - type: string
+            maxLength: 3
+            minLength: 3
+          - type: 'null'
+          title: Currency
+      additionalProperties: false
+      type: object
+      title: ConversionIn
+    DeadLetterOut:
+      properties:
+        event_id:
+          type: string
+          title: Event Id
+        failure_reason:
+          type: string
+          title: Failure Reason
+        failure_class:
+          type: string
+          title: Failure Class
+        attempts:
+          type: integer
+          title: Attempts
+        first_failed_at:
+          type: string
+          format: date-time
+          title: First Failed At
+        last_failed_at:
+          type: string
+          format: date-time
+          title: Last Failed At
+        replayed_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Replayed At
+      type: object
+      required:
+      - event_id
+      - failure_reason
+      - failure_class
+      - attempts
+      - first_failed_at
+      - last_failed_at
+      title: DeadLetterOut
+    DeadLetterPageOut:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/DeadLetterOut'
+          type: array
+          title: Items
+        next_cursor:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Next Cursor
+      type: object
+      required:
+      - items
+      title: DeadLetterPageOut
+    EventOut:
+      properties:
+        event_id:
+          type: string
+          title: Event Id
+        tenant_id:
+          type: string
+          title: Tenant Id
+        event_type:
+          type: string
+          title: Event Type
+        occurred_at:
+          type: string
+          format: date-time
+          title: Occurred At
+        received_at:
+          type: string
+          format: date-time
+          title: Received At
+        schema_version:
+          type: integer
+          title: Schema Version
+        anonymous_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Anonymous Id
+        contact_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Contact Id
+        session_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Session Id
+        campaign_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Campaign Id
+        channel:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Channel
+        source_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Url
+        conversion:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Conversion
+        consent:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Consent
+        metadata:
+          additionalProperties: true
+          type: object
+          title: Metadata
+          default: {}
+      type: object
+      required:
+      - event_id
+      - tenant_id
+      - event_type
+      - occurred_at
+      - received_at
+      - schema_version
+      title: EventOut
+    EventPageOut:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/EventOut'
+          type: array
+          title: Items
+        next_cursor:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Next Cursor
+        range_applied:
+          anyOf:
+          - $ref: '#/components/schemas/RangeAppliedOut'
+          - type: 'null'
+      type: object
+      required:
+      - items
+      title: EventPageOut
+    EventSubmission:
+      properties:
+        event_id:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Event Id
+          description: Supply this to make your own retries idempotent. Omit it and the platform generates
+            one, which means a retry of this submission becomes a SECOND event.
+        event_type:
+          $ref: '#/components/schemas/EventType'
+        occurred_at:
+          type: string
+          format: date-time
+          title: Occurred At
+        anonymous_id:
+          anyOf:
+          - type: string
+            maxLength: 128
+          - type: 'null'
+          title: Anonymous Id
+        contact_id:
+          anyOf:
+          - type: string
+            maxLength: 128
+          - type: 'null'
+          title: Contact Id
+        session_id:
+          anyOf:
+          - type: string
+            maxLength: 128
+          - type: 'null'
+          title: Session Id
+        campaign_id:
+          anyOf:
+          - type: string
+            maxLength: 128
+          - type: 'null'
+          title: Campaign Id
+        channel:
+          anyOf:
+          - $ref: '#/components/schemas/Channel'
+          - type: 'null'
+        source_url:
+          anyOf:
+          - type: string
+            maxLength: 2048
+          - type: 'null'
+          title: Source Url
+        conversion:
+          anyOf:
+          - $ref: '#/components/schemas/ConversionIn'
+          - type: 'null'
+        consent:
+          anyOf:
+          - $ref: '#/components/schemas/ConsentIn'
+          - type: 'null'
+        metadata:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Metadata
+      additionalProperties: false
+      type: object
+      required:
+      - event_type
+      - occurred_at
+      title: EventSubmission
+    EventType:
+      type: string
+      enum:
+      - pageview
+      - click
+      - form_submit
+      - conversion
+      - email_open
+      - email_click
+      - ad_impression
+      - ad_click
+      - registration
+      - donation
+      - membership
+      - renewal
+      title: EventType
+    HTTPValidationError:
+      properties:
+        detail:
+          items:
+            $ref: '#/components/schemas/ValidationError'
+          type: array
+          title: Detail
+      type: object
+      title: HTTPValidationError
+    RangeAppliedOut:
+      properties:
+        start:
+          type: string
+          format: date-time
+          title: Start
+        end:
+          type: string
+          format: date-time
+          title: End
+        clamped:
+          type: boolean
+          title: Clamped
+      type: object
+      required:
+      - start
+      - end
+      - clamped
+      title: RangeAppliedOut
+    RealtimeOut:
+      properties:
+        counts:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Counts
+        cached:
+          type: boolean
+          title: Cached
+        age_seconds:
+          type: integer
+          title: Age Seconds
+        degraded:
+          type: boolean
+          title: Degraded
+      type: object
+      required:
+      - counts
+      - cached
+      - age_seconds
+      - degraded
+      title: RealtimeOut
+    SearchOut:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/EventOut'
+          type: array
+          title: Items
+        total:
+          type: integer
+          title: Total
+        next_cursor:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Next Cursor
+        freshness_note:
+          type: string
+          title: Freshness Note
+      type: object
+      required:
+      - items
+      - total
+      - freshness_note
+      title: SearchOut
+    StatsBucketOut:
+      properties:
+        bucket_start:
+          type: string
+          format: date-time
+          title: Bucket Start
+        event_type:
+          type: string
+          title: Event Type
+        count:
+          type: integer
+          title: Count
+      type: object
+      required:
+      - bucket_start
+      - event_type
+      - count
+      title: StatsBucketOut
+    StatsOut:
+      properties:
+        range_applied:
+          $ref: '#/components/schemas/RangeAppliedOut'
+        buckets:
+          items:
+            $ref: '#/components/schemas/StatsBucketOut'
+          type: array
+          title: Buckets
+      type: object
+      required:
+      - range_applied
+      - buckets
+      title: StatsOut
+    ValidationError:
+      properties:
+        loc:
+          items:
+            anyOf:
+            - type: string
+            - type: integer
+          type: array
+          title: Location
+        msg:
+          type: string
+          title: Message
+        type:
+          type: string
+          title: Error Type
+        input:
+          title: Input
+        ctx:
+          type: object
+          title: Context
+      type: object
+      required:
+      - loc
+      - msg
+      - type
+      title: ValidationError

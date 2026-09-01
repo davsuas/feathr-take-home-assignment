@@ -1,0 +1,100 @@
+name: feathr-event-platform
+
+services:
+  api:
+    build: { context: ., target: runtime }
+    environment:
+      QUEUE_BACKEND: rabbitmq
+      MONGO_URI: mongodb://mongodb:27017
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      REDIS_URL: redis://redis:6379/0
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+    ports: ["8000:8000"]
+    depends_on:
+      mongodb: { condition: service_healthy }
+      elasticsearch: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  worker:
+    build: { context: ., target: runtime }
+    command: ["python", "-m", "eventplatform.worker.main"]
+    environment:
+      QUEUE_BACKEND: rabbitmq
+      MONGO_URI: mongodb://mongodb:27017
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      REDIS_URL: redis://redis:6379/0
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+    depends_on:
+      mongodb: { condition: service_healthy }
+      elasticsearch: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+    deploy:
+      resources:
+        limits: { memory: 512M }
+
+  # Standalone, NOT a replica set. This design uses no transactions and no change
+  # streams: idempotency rests on a unique index plus single-document atomicity.
+  # See ADR-005 - a replica set returns only with a production outbox reader.
+  mongodb:
+    # 8.2, not 8.0: MongoDB 8.0 refuses to start on Linux kernel 6.19+ (SERVER-121912),
+    # which current Docker Desktop VMs run.
+    image: mongo:8.2
+    volumes: ["mongo-data:/data/db"]
+    ports: ["27017:27017"]
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.1.2
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      # Xms must equal Xmx and stay under half the container limit, or the JVM
+      # fights the cgroup and the OOM killer wins.
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+    ulimits:
+      memlock: { soft: -1, hard: -1 }
+    volumes: ["es-data:/usr/share/elasticsearch/data"]
+    ports: ["9200:9200"]
+    deploy:
+      resources:
+        limits: { memory: 1536M }
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS localhost:9200/_cluster/health | grep -qE '\"status\":\"(green|yellow)\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 40s
+
+  redis:
+    image: redis:8.0-alpine
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  rabbitmq:
+    image: rabbitmq:4.1-management-alpine
+    ports: ["5672:5672", "15672:15672"]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+volumes:
+  mongo-data:
+  es-data:
